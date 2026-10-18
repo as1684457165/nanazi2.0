@@ -47,7 +47,7 @@ class PetService : Service() {
     @Volatile
     private var lobePackage: String? = null
 
-    private val menuItems = arrayOf("撒娇", "睡觉", "吃饭", "打游戏", "干活")
+    private val menuItems = arrayOf("撒娇", "吃饭", "打游戏", "干活")
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -282,7 +282,6 @@ class PetService : Service() {
         hideMenu()
         when (name) {
             "撒娇" -> actFlirt()
-            "睡觉" -> actSleep()
             "吃饭" -> actEat()
             "打游戏" -> actGame()
             "干活" -> actWork()
@@ -297,13 +296,6 @@ class PetService : Service() {
             start()
         }
         restore(1500)
-    }
-
-    private fun actSleep() {
-        setPetImage("pet_sleep")
-        showBubble("zzz……别吵，本小姐在充电。")
-        pet.animate().rotation(75f).alpha(0.85f).setDuration(400).start()
-        restore(3200)
     }
 
     private fun actEat() {
