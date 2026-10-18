@@ -1,7 +1,6 @@
 package com.nekoko.pet
 
 import android.animation.ObjectAnimator
-import android.animation.ValueAnimator
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -17,16 +16,17 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.view.Choreographer
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import kotlin.math.abs
+import kotlin.math.cos
 
 class PetService : Service() {
 
@@ -41,8 +41,18 @@ class PetService : Service() {
     private var menuShown = false
 
     private val handler = Handler(Looper.getMainLooper())
+
     private var dragging = false
     private var dir = 1
+
+    private var walkX = 0f
+    private var walkState = 1
+    private var stateUntil = 0L
+    private var lastFrame = 0L
+    private var phase = 0f
+    private var alive = false
+
+    private val TAU = 6.2831855f
 
     @Volatile
     private var lobePackage: String? = null
@@ -79,8 +89,7 @@ class PetService : Service() {
         attachTouch()
         wm.addView(root, lp)
 
-        breathe()
-        patrol()
+        startLife()
 
         Thread { findLobe() }.start()
     }
@@ -336,6 +345,65 @@ class PetService : Service() {
         }, delay)
     }
 
+    private fun startLife() {
+        alive = true
+        lastFrame = 0L
+        walkX = lp.x.toFloat()
+        walkState = 1
+        stateUntil = SystemClock.uptimeMillis() + 2500
+        Choreographer.getInstance().postFrameCallback(frameCb)
+    }
+
+    private fun nextState() {
+        val now = SystemClock.uptimeMillis()
+        if (walkState == 1) {
+            walkState = 0
+            stateUntil = now + (2200..5200).random()
+        } else {
+            walkState = 1
+            stateUntil = now + (3000..7000).random()
+        }
+    }
+
+    private val frameCb = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (!alive) return
+
+            val now = SystemClock.uptimeMillis()
+            val dt = if (lastFrame == 0L) 16f else (now - lastFrame).toFloat().coerceIn(1f, 48f)
+            lastFrame = now
+
+            if (now >= stateUntil) nextState()
+
+            val moving = !dragging && !menuShown && walkState == 1 && root.width > 0
+
+            if (moving) {
+                val maxX = (resources.displayMetrics.widthPixels - root.width).toFloat()
+                walkX += dir * 30f * resources.displayMetrics.density * dt / 1000f
+                if (walkX <= 0f) {
+                    walkX = 0f
+                    dir = 1
+                }
+                if (walkX >= maxX) {
+                    walkX = maxX
+                    dir = -1
+                }
+                lp.x = walkX.toInt()
+                wm.updateViewLayout(root, lp)
+            } else {
+                walkX = lp.x.toFloat()
+            }
+
+            val amp = if (moving) dp(4).toFloat() else dp(8).toFloat()
+            val freq = if (moving) 1.7f else 0.38f
+            phase += dt / 1000f * freq
+            if (phase > 1000f) phase -= 1000f
+            pet.translationY = -amp * (1f - cos(TAU * phase)) / 2f
+
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+
     private fun findLobe() {
         val list = packageManager.queryIntentActivities(
             Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0
@@ -369,37 +437,6 @@ class PetService : Service() {
         }
     }
 
-    private fun breathe() {
-        val a = ObjectAnimator.ofFloat(pet, "translationY", 0f, -dp(8).toFloat())
-        a.duration = 1300
-        a.repeatMode = ValueAnimator.REVERSE
-        a.repeatCount = ValueAnimator.INFINITE
-        a.interpolator = LinearInterpolator()
-        a.start()
-    }
-
-    private fun patrol() {
-        handler.post(object : Runnable {
-            override fun run() {
-                if (!dragging && root.width > 0) {
-                    val w = resources.displayMetrics.widthPixels
-                    lp.x += dir * 2
-                    if (lp.x < 0) {
-                        lp.x = 0
-                        dir = 1
-                    }
-                    if (lp.x > w - root.width) {
-                        lp.x = w - root.width
-                        dir = -1
-                    }
-                    wm.updateViewLayout(root, lp)
-                    if (menuShown) placeMenu()
-                }
-                handler.postDelayed(this, 40)
-            }
-        })
-    }
-
     private val hideBubble = Runnable { bubble.visibility = View.GONE }
 
     private fun showBubble(text: String) {
@@ -424,6 +461,8 @@ class PetService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        alive = false
+        Choreographer.getInstance().removeFrameCallback(frameCb)
         handler.removeCallbacksAndMessages(null)
         if (menuShown) hideMenu()
         if (::root.isInitialized) wm.removeView(root)
