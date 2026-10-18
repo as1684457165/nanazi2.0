@@ -1,6 +1,7 @@
 package com.nekoko.pet
 
 import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -16,21 +17,16 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
-import android.view.Choreographer
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import kotlin.math.PI
 import kotlin.math.abs
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.hypot
-import kotlin.math.sin
 
 class PetService : Service() {
 
@@ -45,21 +41,8 @@ class PetService : Service() {
     private var menuShown = false
 
     private val handler = Handler(Looper.getMainLooper())
-
     private var dragging = false
-
-    private var posX = 0f
-    private var posY = 0f
-    private var tgtX = 0f
-    private var tgtY = 0f
-    private var angle = 0f
-    private var phase = 0f
-    private var lastFrame = 0L
-    private var alive = false
-
-    private val TAU = 6.2831855f
-    private val SPEED_DP = 16f
-    private val TURN_SPEED = 2f
+    private var dir = 1
 
     @Volatile
     private var lobePackage: String? = null
@@ -96,7 +79,8 @@ class PetService : Service() {
         attachTouch()
         wm.addView(root, lp)
 
-        startLife()
+        breathe()
+        patrol()
 
         Thread { findLobe() }.start()
     }
@@ -215,9 +199,7 @@ class PetService : Service() {
 
     private fun snap() {
         val w = resources.displayMetrics.widthPixels
-        val h = resources.displayMetrics.heightPixels
-        lp.x = lp.x.coerceIn(0, (w - root.width).coerceAtLeast(0))
-        lp.y = lp.y.coerceIn(0, (h - root.height).coerceAtLeast(0))
+        lp.x = if (lp.x + root.width / 2 < w / 2) 0 else w - root.width
         wm.updateViewLayout(root, lp)
     }
 
@@ -354,81 +336,6 @@ class PetService : Service() {
         }, delay)
     }
 
-    private fun startLife() {
-        alive = true
-        lastFrame = 0L
-        posX = lp.x.toFloat()
-        posY = lp.y.toFloat()
-        tgtX = posX
-        tgtY = posY
-        angle = 0f
-        Choreographer.getInstance().postFrameCallback(frameCb)
-    }
-
-    private fun pickTarget() {
-        val maxX = (resources.displayMetrics.widthPixels - root.width).toFloat().coerceAtLeast(1f)
-        val maxY = (resources.displayMetrics.heightPixels - root.height).toFloat().coerceAtLeast(1f)
-        val far = dp(120).toFloat()
-
-        repeat(24) {
-            val x = (0..maxX.toInt()).random().toFloat()
-            val y = (0..maxY.toInt()).random().toFloat()
-            if (hypot(x - posX, y - posY) > far) {
-                tgtX = x
-                tgtY = y
-                return
-            }
-        }
-        tgtX = maxX / 2f
-        tgtY = maxY / 2f
-    }
-
-    private val frameCb = object : Choreographer.FrameCallback {
-        override fun doFrame(frameTimeNanos: Long) {
-            if (!alive) return
-
-            val now = SystemClock.uptimeMillis()
-            val dt = if (lastFrame == 0L) 16f else (now - lastFrame).toFloat().coerceIn(1f, 48f)
-            lastFrame = now
-
-            val dts = dt / 1000f
-            val density = resources.displayMetrics.density
-            val moving = !dragging && !menuShown && root.width > 0 && root.height > 0
-
-            if (moving) {
-                val maxX = (resources.displayMetrics.widthPixels - root.width).toFloat().coerceAtLeast(0f)
-                val maxY = (resources.displayMetrics.heightPixels - root.height).toFloat().coerceAtLeast(0f)
-
-                if (hypot(tgtX - posX, tgtY - posY) < dp(24).toFloat()) pickTarget()
-
-                val want = atan2(tgtY - posY, tgtX - posX)
-                var diff = want - angle
-                while (diff > PI.toFloat()) diff -= TAU
-                while (diff < -PI.toFloat()) diff += TAU
-                angle += diff * (TURN_SPEED * dts).coerceAtMost(1f)
-
-                posX += cos(angle) * SPEED_DP * density * dts
-                posY += sin(angle) * SPEED_DP * density * dts
-
-                posX = posX.coerceIn(0f, maxX)
-                posY = posY.coerceIn(0f, maxY)
-
-                lp.x = posX.toInt()
-                lp.y = posY.toInt()
-                wm.updateViewLayout(root, lp)
-            } else {
-                posX = lp.x.toFloat()
-                posY = lp.y.toFloat()
-            }
-
-            phase += dts * 0.33f
-            if (phase > 1000f) phase -= 1000f
-            pet.translationY = -dp(8) * (1f - cos(TAU * phase)) / 2f
-
-            Choreographer.getInstance().postFrameCallback(this)
-        }
-    }
-
     private fun findLobe() {
         val list = packageManager.queryIntentActivities(
             Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0
@@ -462,6 +369,37 @@ class PetService : Service() {
         }
     }
 
+    private fun breathe() {
+        val a = ObjectAnimator.ofFloat(pet, "translationY", 0f, -dp(8).toFloat())
+        a.duration = 1300
+        a.repeatMode = ValueAnimator.REVERSE
+        a.repeatCount = ValueAnimator.INFINITE
+        a.interpolator = LinearInterpolator()
+        a.start()
+    }
+
+    private fun patrol() {
+        handler.post(object : Runnable {
+            override fun run() {
+                if (!dragging && root.width > 0) {
+                    val w = resources.displayMetrics.widthPixels
+                    lp.x += dir * 2
+                    if (lp.x < 0) {
+                        lp.x = 0
+                        dir = 1
+                    }
+                    if (lp.x > w - root.width) {
+                        lp.x = w - root.width
+                        dir = -1
+                    }
+                    wm.updateViewLayout(root, lp)
+                    if (menuShown) placeMenu()
+                }
+                handler.postDelayed(this, 40)
+            }
+        })
+    }
+
     private val hideBubble = Runnable { bubble.visibility = View.GONE }
 
     private fun showBubble(text: String) {
@@ -486,8 +424,6 @@ class PetService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        alive = false
-        Choreographer.getInstance().removeFrameCallback(frameCb)
         handler.removeCallbacksAndMessages(null)
         if (menuShown) hideMenu()
         if (::root.isInitialized) wm.removeView(root)
