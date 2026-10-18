@@ -25,8 +25,12 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.sin
 
 class PetService : Service() {
 
@@ -43,16 +47,19 @@ class PetService : Service() {
     private val handler = Handler(Looper.getMainLooper())
 
     private var dragging = false
-    private var dir = 1
 
-    private var walkX = 0f
-    private var walkState = 1
-    private var stateUntil = 0L
-    private var lastFrame = 0L
+    private var posX = 0f
+    private var posY = 0f
+    private var tgtX = 0f
+    private var tgtY = 0f
+    private var angle = 0f
     private var phase = 0f
+    private var lastFrame = 0L
     private var alive = false
 
     private val TAU = 6.2831855f
+    private val SPEED_DP = 16f
+    private val TURN_SPEED = 2f
 
     @Volatile
     private var lobePackage: String? = null
@@ -208,7 +215,9 @@ class PetService : Service() {
 
     private fun snap() {
         val w = resources.displayMetrics.widthPixels
-        lp.x = if (lp.x + root.width / 2 < w / 2) 0 else w - root.width
+        val h = resources.displayMetrics.heightPixels
+        lp.x = lp.x.coerceIn(0, (w - root.width).coerceAtLeast(0))
+        lp.y = lp.y.coerceIn(0, (h - root.height).coerceAtLeast(0))
         wm.updateViewLayout(root, lp)
     }
 
@@ -348,21 +357,30 @@ class PetService : Service() {
     private fun startLife() {
         alive = true
         lastFrame = 0L
-        walkX = lp.x.toFloat()
-        walkState = 1
-        stateUntil = SystemClock.uptimeMillis() + 2500
+        posX = lp.x.toFloat()
+        posY = lp.y.toFloat()
+        tgtX = posX
+        tgtY = posY
+        angle = 0f
         Choreographer.getInstance().postFrameCallback(frameCb)
     }
 
-    private fun nextState() {
-        val now = SystemClock.uptimeMillis()
-        if (walkState == 1) {
-            walkState = 0
-            stateUntil = now + (2200..5200).random()
-        } else {
-            walkState = 1
-            stateUntil = now + (3000..7000).random()
+    private fun pickTarget() {
+        val maxX = (resources.displayMetrics.widthPixels - root.width).toFloat().coerceAtLeast(1f)
+        val maxY = (resources.displayMetrics.heightPixels - root.height).toFloat().coerceAtLeast(1f)
+        val far = dp(120).toFloat()
+
+        repeat(24) {
+            val x = (0..maxX.toInt()).random().toFloat()
+            val y = (0..maxY.toInt()).random().toFloat()
+            if (hypot(x - posX, y - posY) > far) {
+                tgtX = x
+                tgtY = y
+                return
+            }
         }
+        tgtX = maxX / 2f
+        tgtY = maxY / 2f
     }
 
     private val frameCb = object : Choreographer.FrameCallback {
@@ -373,32 +391,39 @@ class PetService : Service() {
             val dt = if (lastFrame == 0L) 16f else (now - lastFrame).toFloat().coerceIn(1f, 48f)
             lastFrame = now
 
-            if (now >= stateUntil) nextState()
-
-            val moving = !dragging && !menuShown && walkState == 1 && root.width > 0
+            val dts = dt / 1000f
+            val density = resources.displayMetrics.density
+            val moving = !dragging && !menuShown && root.width > 0 && root.height > 0
 
             if (moving) {
-                val maxX = (resources.displayMetrics.widthPixels - root.width).toFloat()
-                walkX += dir * 30f * resources.displayMetrics.density * dt / 1000f
-                if (walkX <= 0f) {
-                    walkX = 0f
-                    dir = 1
-                }
-                if (walkX >= maxX) {
-                    walkX = maxX
-                    dir = -1
-                }
-                lp.x = walkX.toInt()
+                val maxX = (resources.displayMetrics.widthPixels - root.width).toFloat().coerceAtLeast(0f)
+                val maxY = (resources.displayMetrics.heightPixels - root.height).toFloat().coerceAtLeast(0f)
+
+                if (hypot(tgtX - posX, tgtY - posY) < dp(24).toFloat()) pickTarget()
+
+                val want = atan2(tgtY - posY, tgtX - posX)
+                var diff = want - angle
+                while (diff > PI.toFloat()) diff -= TAU
+                while (diff < -PI.toFloat()) diff += TAU
+                angle += diff * (TURN_SPEED * dts).coerceAtMost(1f)
+
+                posX += cos(angle) * SPEED_DP * density * dts
+                posY += sin(angle) * SPEED_DP * density * dts
+
+                posX = posX.coerceIn(0f, maxX)
+                posY = posY.coerceIn(0f, maxY)
+
+                lp.x = posX.toInt()
+                lp.y = posY.toInt()
                 wm.updateViewLayout(root, lp)
             } else {
-                walkX = lp.x.toFloat()
+                posX = lp.x.toFloat()
+                posY = lp.y.toFloat()
             }
 
-            val amp = if (moving) dp(4).toFloat() else dp(8).toFloat()
-            val freq = if (moving) 1.7f else 0.38f
-            phase += dt / 1000f * freq
+            phase += dts * 0.33f
             if (phase > 1000f) phase -= 1000f
-            pet.translationY = -amp * (1f - cos(TAU * phase)) / 2f
+            pet.translationY = -dp(8) * (1f - cos(TAU * phase)) / 2f
 
             Choreographer.getInstance().postFrameCallback(this)
         }
